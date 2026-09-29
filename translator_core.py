@@ -505,3 +505,4 @@ def translate_fb2(
         progress_callback(total_elements, total_elements, "Переклад повністю завершено!")
 
     return output_path
+

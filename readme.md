@@ -1,97 +1,59 @@
-# Stable FB2 AI Translator (Desktop GUI & Telegram Bot)
+# Stable FB2 AI Translator
 
 [English](#english) | [Українська](#українська)
+
+## English
+
+program for automatic translation of electronic books in fb2 format. it uses google gemini api for text processing. the original file structure remains fully intact. the application breaks the text into optimal batches and bypasses server restrictions automatically.
+
+### features
+* preservation of native xml markup of fb2 files.
+* automatic recovery from server errors and api limits.
+* saving sessions, file queues, and local settings.
+* dynamic batch splitting during complex translations.
+* modern gui with drag-and-drop support.
+
+### how to use
+1. get a free api key from google ai studio.
+2. run the application.
+3. enter your key in the api key section.
+4. drag and drop your fb2 files into the queue.
+5. click the start button.
+
+### settings explanation
+* **Character limit**: maximum length of a text batch sent to the server per request.
+* **Temperature**: determines the model's creativity level, where a lower value provides a more strict and accurate translation.
+* **Base delay (s)**: pause time between successful requests.
+* **Protection delay (s)**: waiting time if google's safety filters block the content.
+* **JSON error delay (s)**: delay duration when the server returns a broken data format.
+* **Mismatch delay (s)**: waiting time if the translated paragraph count differs from the original text.
+* **Server error delay (s)**: pause triggered by api quota exhaustion or internal server crashes.
 
 ---
 
 ## Українська
 
-Проєкт для автоматичного та якісного перекладу електронних книг у форматі **FB2** на українську мову за допомогою Google Gemini API.
+програма для автоматичного перекладу електронних книг у форматі fb2. вона використовує google gemini api для обробки тексту. оригінальна структура файлу зберігається повністю. додаток розбиває текст на оптимальні пакети та автоматично обходить серверні обмеження.
 
-Оригінальна структура книги, включаючи розділи, параграфи, вірші, заголовки та розмітку, зберігається повністю.
+### функціонал
+* збереження оригінальної xml-розмітки файлів fb2.
+* автоматичне відновлення після помилок сервера та лімітів api.
+* збереження сесій, черги файлів та локальних налаштувань.
+* динамічне дроблення пакетів під час складних перекладів.
+* сучасний графічний інтерфейс із підтримкою перетягування файлів.
 
-Проєкт підтримує два формати роботи:
-1. **Telegram-бот** із вебсервером для деплою на **Render** (з підтримкою паузи, лічильника запитів та налаштуванням затримок).
-2. **Десктопний GUI** додаток (`main_ver3-4.py`).
+### як користуватися
+1. отримайте безкоштовний ключ в google ai studio.
+2. запустіть програму.
+3. вкажіть ваш ключ у відповідному полі.
+4. перетягніть файли fb2 у вікно черги.
+5. натисніть кнопку старту.
 
----
-
-### ✨ Можливості Telegram-бота (аналогічно десктопній версії)
-
-1. **⏸ Пауза та ▶️ Відновлення**:
-   * Під час перекладу під повідомленням прогресу доступна інлайн-кнопка **⏸ Пауза**.
-   * Натискання призупиняє запити до API у реальному часі. Кнопка змінюється на **▶️ Продовжити**.
-   * Також є кнопка **🛑 Зупинити** — зупиняє переклад і відправляє частково перекладений файл.
-
-2. **📊 Лічильник запитів та скидання ліміту**:
-   * Відстеження кількості запитів за поточну добу (`Запитів сьогодні: X / 500`).
-   * Розрахунок часу до скидання щоденної квоти Google API (скидання о 17:00 UTC / 20:00 за Києвом).
-   * Інформація відображається у реальному часі під час перекладу та за командою `/status`.
-
-3. **⚙️ Налаштування часових затримок (/settings)**:
-   * **⏱ Базова затримка** (`delay_req`): пауза між успішними пакетами (1.0, 2.0, 3.0, 5.0, 10.0 с).
-   * **🛡 Пауза захисту** (`delay_protect`): очікування при блокуванні фільтрами безпеки (2.0 - 15.0 с).
-   * **⚠️ Пауза помилок** (`delay_error`): затримка при збої сервера або ліміті 429 (5.0 - 20.0 с).
-   * **🔤 Ліміт символів** (`char_limit`): розмір пакета тексту (3000 - 10000 символів).
-   * **🌡 Температура** (`temperature`): рівень креативності моделі (0.0 - 1.0).
-   * **🤖 Модель AI** (`model`): вибір моделі Google Gemini.
-   * Налаштування зберігаються індивідуально для кожного користувача.
-
----
-
-### 🚀 Розгортання Telegram-бота на Render
-
-#### 1. Швидке налаштування Web Service:
-* **Environment**: `Python`
-* **Build Command**:
-  ```bash
-  pip install -r requirements.txt
-  ```
-* **Start Command**:
-  ```bash
-  python bot.py
-  ```
-
-#### 2. Змінні середовища (Environment Variables):
-Додайте наступні змінні у панелі керування Render (`Environment`):
-* `BOT_TOKEN` — токен Telegram-бота (отримайте у [@BotFather](https://t.me/BotFather)).
-* `GEMINI_API_KEY` — API-ключ від Google ([Google AI Studio](https://aistudio.google.com/app/apikey)).
-* `PORT` — `10000` (порт для HTTP health check сервера).
-* *(Опціонально)* `GEMINI_MODEL` — за замовчуванням `models/gemini-3.1-flash-lite`.
-
----
-
-### 💻 Локальний запуск Telegram-бота
-
-1. Склонуйте репозиторій:
-   ```bash
-   git clone https://github.com/Mark-314159265/translator.git
-   cd translator
-   ```
-2. Встановіть залежності:
-   ```bash
-   pip install -r requirements.txt
-   ```
-3. Створіть файл `.env` на основі `.env.example`:
-   ```env
-   BOT_TOKEN=123456789:AAABBBCCCDDDEEEFFF
-   GEMINI_API_KEY=AIzaSy...
-   PORT=10000
-   ```
-4. Запустіть бота:
-   ```bash
-   python bot.py
-   ```
-
----
-
-## English
-
-A tool for high-quality automatic translation of **FB2** format e-books into Ukrainian using Google Gemini API.
-
-Preserves native XML structure, titles, paragraphs, and stanzas. Available as a **Telegram Bot** (with interactive pause/resume, request counters, delay customization, and Render web service support) and as a desktop GUI app.
-
-### Deployment on Render
-* **Build Command**: `pip install -r requirements.txt`
-* **Start Command**: `python bot.py`
-* **Required Env Vars**: `BOT_TOKEN`, `GEMINI_API_KEY`, `PORT`
+### пояснення налаштувань
+* **Ліміт символів**: максимальна довжина текстового пакета, який відправляється на сервер за один запит.
+* **Температура**: визначає рівень креативності моделі, нижче значення забезпечує суворіший і точніший переклад.
+* **Базова пауза (с)**: час очікування між успішними запитами.
+* **Пауза захисту (с)**: затримка, якщо фільтри безпеки google заблокували контент.
+* **Пауза помилки JSON (с)**: час очікування, коли сервер повертає пошкоджений формат даних.
+* **Пауза розбіжності (с)**: затримка, якщо кількість перекладених абзаців відрізняється від оригінального тексту.
+* **Пауза збою сервера (с)**: пауза при вичерпанні квоти запитів api або внутрішніх падіннях сервера.
