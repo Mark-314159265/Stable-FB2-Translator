@@ -122,6 +122,30 @@ class TestTelegramBot(unittest.TestCase):
             self.assertIn("time_until_reset", data)
 
 
+    def test_apply_user_setting(self):
+        # Valid settings
+        ok, msg = bot.apply_user_setting(222, "delay_req", "2.5")
+        self.assertTrue(ok)
+        self.assertEqual(bot.user_settings_storage.get_config(222).delay_req, 2.5)
+
+        ok, msg = bot.apply_user_setting(222, "char_limit", "4500")
+        self.assertTrue(ok)
+        self.assertEqual(bot.user_settings_storage.get_config(222).char_limit, 4500)
+
+        ok, msg = bot.apply_user_setting(222, "temperature", "0.65")
+        self.assertTrue(ok)
+        self.assertEqual(bot.user_settings_storage.get_config(222).temperature, 0.65)
+
+        # Invalid bounds or non-numbers
+        ok, msg = bot.apply_user_setting(222, "temperature", "1.5")
+        self.assertFalse(ok)
+
+        ok, msg = bot.apply_user_setting(222, "char_limit", "abc")
+        self.assertFalse(ok)
+
+        bot.user_settings_storage.reset(222)
+
+
 if __name__ == "__main__":
     unittest.main()
 

@@ -1,0 +1,41 @@
+# Environment and Secrets
+.env
+key.txt
+session.json
+stats.json
+user_settings.json
+
+# Temporary translation files
+*.fb2
+*_translated.fb2
+*_uk.fb2
+*_partial.fb2
+temp_*
+temp/
+tmp/
+
+# Python cache & virtual environment
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.venv/
+venv/
+ENV/
+
+# Executables & Builds
+main_ver3-4.exe
+previous versions/main_ver3-1.exe
+previous versions/main_ver3-3.exe
+previous versions/main_ver3.exe
+*.exe
+dist/
+build/
+*.spec
+
+# Previous versions & notes
+список покращень.txt
+previous versions/supported_list.py
+previous versions/main_ver3-1.py
+previous versions/main_ver3-2.py
+previous versions/main_ver3-3.py
