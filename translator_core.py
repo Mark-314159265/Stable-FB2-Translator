@@ -2,7 +2,10 @@ import os
 import time
 import json
 import logging
-from typing import Callable, Optional, Tuple, List
+import datetime
+import threading
+from dataclasses import dataclass, asdict
+from typing import Callable, Optional, Tuple, List, Dict, Any
 from lxml import etree
 from google import genai
 from google.genai import types
@@ -76,6 +79,133 @@ SAFETY_SETTINGS = [
         threshold=types.HarmBlockThreshold.BLOCK_NONE,
     )
 ]
+
+
+class TranslationCancelled(Exception):
+    """Raised when translation is cancelled by user or caller."""
+    pass
+
+
+@dataclass
+class TranslationConfig:
+    """Configuration class for FB2 translation parameters and delays."""
+    api_key: Optional[str] = None
+    model: str = DEFAULT_MODEL
+    sys_prompt: str = DEFAULT_SYS_PROMPT
+    prompt_1: str = DEFAULT_PROMPT_1
+    prompt_2: str = DEFAULT_PROMPT_2
+    prompt_3: str = DEFAULT_PROMPT_3
+    char_limit: int = DEFAULT_CHAR_LIMIT
+    temperature: float = DEFAULT_TEMPERATURE
+    delay_req: float = DEFAULT_DELAY_REQ
+    delay_protect: float = DEFAULT_DELAY_PROTECT
+    delay_json: float = DEFAULT_DELAY_JSON
+    delay_mismatch: float = DEFAULT_DELAY_MISMATCH
+    delay_error: float = DEFAULT_DELAY_ERROR
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "TranslationConfig":
+        valid_fields = cls.__dataclass_fields__.keys()
+        filtered = {k: v for k, v in data.items() if k in valid_fields}
+        return cls(**filtered)
+
+
+class StatsTracker:
+    """Tracks daily API requests and calculates time to daily quota reset (17:00 UTC)."""
+    def __init__(self, filepath: str = "stats.json", daily_limit: int = 500):
+        self.filepath = filepath
+        self.daily_limit = daily_limit
+        self._lock = threading.Lock()
+        self.data = self._load()
+
+    def _load(self) -> dict:
+        today = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
+        if os.path.exists(self.filepath):
+            try:
+                with open(self.filepath, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    if data.get("date") == today:
+                        return data
+            except Exception:
+                pass
+        return {"date": today, "requests": 0}
+
+    def _save(self):
+        try:
+            with open(self.filepath, "w", encoding="utf-8") as f:
+                json.dump(self.data, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.warning(f"Failed to save stats to {self.filepath}: {e}")
+
+    def increment(self) -> int:
+        """Increments the daily request counter and saves state."""
+        with self._lock:
+            today = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
+            if self.data.get("date") != today:
+                self.data = {"date": today, "requests": 0}
+            self.data["requests"] = self.data.get("requests", 0) + 1
+            self._save()
+            return self.data["requests"]
+
+    def get_stats(self) -> dict:
+        """Returns statistics on daily requests and countdown to quota reset."""
+        with self._lock:
+            today = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
+            if self.data.get("date") != today:
+                self.data = {"date": today, "requests": 0}
+                self._save()
+
+            now_utc = datetime.datetime.now(datetime.timezone.utc)
+            reset_utc = now_utc.replace(hour=17, minute=0, second=0, microsecond=0)
+            if now_utc >= reset_utc:
+                reset_utc += datetime.timedelta(days=1)
+
+            diff = reset_utc - now_utc
+            hours, remainder = divmod(diff.seconds, 3600)
+            minutes, seconds = divmod(remainder, 60)
+
+            local_reset = reset_utc.astimezone()
+            local_time_str = local_reset.strftime("%H:%M")
+            time_format = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+            return {
+                "date": today,
+                "requests_today": self.data.get("requests", 0),
+                "daily_limit": self.daily_limit,
+                "time_until_reset": time_format,
+                "reset_time_local": local_time_str
+            }
+
+
+# Global stats instance
+global_stats = StatsTracker()
+
+
+def smart_wait(
+    seconds: float,
+    pause_event: Optional[threading.Event] = None,
+    cancel_event: Optional[threading.Event] = None
+) -> bool:
+    """
+    Waits for `seconds`, periodically checking pause_event and cancel_event.
+    Returns True if completed, False if cancelled.
+    """
+    elapsed = 0.0
+    step = 0.2
+    while elapsed < seconds:
+        if cancel_event and cancel_event.is_set():
+            return False
+        if pause_event:
+            while not pause_event.is_set():
+                if cancel_event and cancel_event.is_set():
+                    return False
+                time.sleep(0.2)
+        time.sleep(step)
+        elapsed += step
+    return True
 
 
 def get_genai_client(api_key: Optional[str] = None) -> genai.Client:
@@ -156,30 +286,37 @@ def translate_fb2(
     char_limit: Optional[int] = None,
     temperature: Optional[float] = None,
     progress_callback: Optional[Callable[[int, int, str], None]] = None,
-    is_cancelled: Optional[Callable[[], bool]] = None
+    is_cancelled: Optional[Callable[[], bool]] = None,
+    # Advanced settings and controls
+    config: Optional[TranslationConfig] = None,
+    delay_req: Optional[float] = None,
+    delay_protect: Optional[float] = None,
+    delay_json: Optional[float] = None,
+    delay_mismatch: Optional[float] = None,
+    delay_error: Optional[float] = None,
+    pause_event: Optional[threading.Event] = None,
+    cancel_event: Optional[threading.Event] = None,
+    on_request: Optional[Callable[[], None]] = None
 ) -> str:
     """
     Translates an FB2 file into Ukrainian preserving all original XML structure and markup.
-
-    Args:
-        input_path: Path to the source FB2 file.
-        output_path: Target path for the translated FB2. If None, appends '_translated.fb2'.
-        api_key: Google Gemini API key. If None, reads from GEMINI_API_KEY environment variable.
-        model: Gemini model name (default: GEMINI_MODEL env or models/gemini-3.1-flash-lite).
-        sys_prompt: System prompt for Gemini.
-        char_limit: Max characters per translation batch.
-        temperature: Model sampling temperature.
-        progress_callback: Optional callback func(current_idx, total_count, status_message).
-        is_cancelled: Optional callback returning True if processing should be cancelled.
-
-    Returns:
-        The path to the generated output file.
+    Supports pause, resume, cancellation, custom delays, and request counting.
     """
-    client = get_genai_client(api_key)
-    selected_model = model or DEFAULT_MODEL
-    system_instruction = sys_prompt or DEFAULT_SYS_PROMPT
-    base_char_limit = char_limit or DEFAULT_CHAR_LIMIT
-    temp = temperature if temperature is not None else DEFAULT_TEMPERATURE
+    cfg = config or TranslationConfig()
+
+    effective_api_key = api_key or cfg.api_key or os.getenv("GEMINI_API_KEY")
+    client = get_genai_client(effective_api_key)
+
+    selected_model = model or cfg.model
+    system_instruction = sys_prompt or cfg.sys_prompt
+    base_char_limit = char_limit or cfg.char_limit
+    temp = temperature if temperature is not None else cfg.temperature
+
+    d_req = delay_req if delay_req is not None else cfg.delay_req
+    d_protect = delay_protect if delay_protect is not None else cfg.delay_protect
+    d_json = delay_json if delay_json is not None else cfg.delay_json
+    d_mismatch = delay_mismatch if delay_mismatch is not None else cfg.delay_mismatch
+    d_error = delay_error if delay_error is not None else cfg.delay_error
 
     if not output_path:
         base, ext = os.path.splitext(input_path)
@@ -201,16 +338,28 @@ def translate_fb2(
     reset_limit = True
     dynamic_limit = base_char_limit
 
-    prompt_prefixes = [DEFAULT_PROMPT_1, DEFAULT_PROMPT_2, DEFAULT_PROMPT_3]
+    prompt_prefixes = [cfg.prompt_1, cfg.prompt_2, cfg.prompt_3]
 
     logger.info(f"Starting translation: {input_path} -> {output_path} ({total_elements} elements)")
     if progress_callback:
         progress_callback(0, total_elements, "Розпочато аналіз та підготовку пакетів...")
 
+    def check_cancelled():
+        return (cancel_event and cancel_event.is_set()) or (is_cancelled and is_cancelled())
+
+    def wait_if_paused():
+        if pause_event:
+            while not pause_event.is_set():
+                if check_cancelled():
+                    return False
+                time.sleep(0.3)
+        return not check_cancelled()
+
     while idx < total_elements:
-        if is_cancelled and is_cancelled():
+        if check_cancelled() or not wait_if_paused():
             logger.info("Translation cancelled by user/caller.")
-            break
+            tree.write(output_path, encoding='utf-8', xml_declaration=True)
+            raise TranslationCancelled("Переклад було скасовано користувачем.")
 
         if reset_limit:
             dynamic_limit = base_char_limit
@@ -247,19 +396,28 @@ def translate_fb2(
             idx = temp_idx
             continue
 
-        logger.info(f"Processing batch: indices {idx}..{temp_idx} of {total_elements} (chars: {current_chars}, limit: {dynamic_limit})")
+        logger.info(
+            f"Processing batch: indices {idx}..{temp_idx} of {total_elements} "
+            f"(chars: {current_chars}, limit: {dynamic_limit})"
+        )
 
         success = False
         retries = 0
         max_retries = 3
 
         while not success and retries < max_retries:
-            if is_cancelled and is_cancelled():
-                break
+            if check_cancelled() or not wait_if_paused():
+                tree.write(output_path, encoding='utf-8', xml_declaration=True)
+                raise TranslationCancelled("Переклад було скасовано користувачем.")
 
-            prefix = prompt_prefixes[retries] if retries < len(prompt_prefixes) else DEFAULT_PROMPT_3
+            prefix = prompt_prefixes[retries] if retries < len(prompt_prefixes) else prompt_prefixes[-1]
 
             try:
+                # Increment request counters
+                if on_request:
+                    on_request()
+                global_stats.increment()
+
                 translated = translate_batch(
                     client=client,
                     batch_texts=batch_texts,
@@ -281,24 +439,34 @@ def translate_fb2(
                     logger.warning(
                         f"Mismatch: got {len(translated)} translations for {len(batch_nodes)} paragraphs (retry {retries + 1})"
                     )
-                    time.sleep(DEFAULT_DELAY_MISMATCH)
                     retries += 1
+                    if not smart_wait(d_mismatch, pause_event, cancel_event):
+                        tree.write(output_path, encoding='utf-8', xml_declaration=True)
+                        raise TranslationCancelled("Переклад було скасовано користувачем.")
 
             except Exception as e:
                 retries += 1
                 err_msg = str(e)
                 if "429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg:
                     logger.warning("API quota exceeded (429/ResourceExhausted). Waiting 15s...")
-                    time.sleep(15.0)
+                    if not smart_wait(15.0, pause_event, cancel_event):
+                        tree.write(output_path, encoding='utf-8', xml_declaration=True)
+                        raise TranslationCancelled("Переклад було скасовано користувачем.")
                 elif "safety filter" in err_msg.lower() or "empty response" in err_msg.lower():
-                    logger.warning(f"Safety filter triggered (retry {retries}). Waiting {DEFAULT_DELAY_PROTECT}s...")
-                    time.sleep(DEFAULT_DELAY_PROTECT)
+                    logger.warning(f"Safety filter triggered (retry {retries}). Waiting {d_protect}s...")
+                    if not smart_wait(d_protect, pause_event, cancel_event):
+                        tree.write(output_path, encoding='utf-8', xml_declaration=True)
+                        raise TranslationCancelled("Переклад було скасовано користувачем.")
                 elif "json" in err_msg.lower():
-                    logger.warning(f"JSON decode error (retry {retries}). Waiting {DEFAULT_DELAY_JSON}s...")
-                    time.sleep(DEFAULT_DELAY_JSON)
+                    logger.warning(f"JSON decode error (retry {retries}). Waiting {d_json}s...")
+                    if not smart_wait(d_json, pause_event, cancel_event):
+                        tree.write(output_path, encoding='utf-8', xml_declaration=True)
+                        raise TranslationCancelled("Переклад було скасовано користувачем.")
                 else:
                     logger.error(f"Gemini API error (retry {retries}): {err_msg[:120]}")
-                    time.sleep(DEFAULT_DELAY_ERROR)
+                    if not smart_wait(d_error, pause_event, cancel_event):
+                        tree.write(output_path, encoding='utf-8', xml_declaration=True)
+                        raise TranslationCancelled("Переклад було скасовано користувачем.")
 
         if not success:
             if len(batch_nodes) > 1:
@@ -321,7 +489,9 @@ def translate_fb2(
             if progress_callback:
                 progress_callback(idx, total_elements, f"Оброблено {idx}/{total_elements} абзаців")
 
-            time.sleep(DEFAULT_DELAY_REQ)
+            if not smart_wait(d_req, pause_event, cancel_event):
+                tree.write(output_path, encoding='utf-8', xml_declaration=True)
+                raise TranslationCancelled("Переклад було скасовано користувачем.")
 
     # Final cleanup: remove temporary 'translated' helper attributes
     for node in elements:
