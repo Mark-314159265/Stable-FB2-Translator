@@ -153,7 +153,57 @@ class TestTranslatorCore(unittest.TestCase):
             if os.path.exists(stats_file):
                 os.remove(stats_file)
 
+    def test_503_and_timeout_resilience(self):
+        """Tests that 503 Service Unavailable / timeouts pause and retry until successful."""
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".fb2", delete=False) as f:
+            f.write(self.xml_content)
+            input_fb2 = f.name
+
+        output_fb2 = input_fb2.replace(".fb2", "_resilience.fb2")
+
+        try:
+            cfg = TranslationConfig(
+                delay_req=0.01,
+                delay_error=0.01,
+                char_limit=4000
+            )
+
+            call_count = [0]
+            progress_messages = []
+
+            def fake_translate_batch(*args, **kwargs):
+                call_count[0] += 1
+                if call_count[0] == 1:
+                    raise Exception("503 UNAVAILABLE. {'error': {'code': 503, 'message': 'This model is currently experiencing high demand.'}}")
+                elif call_count[0] == 2:
+                    raise Exception("httpx.ReadTimeout: The read operation timed out")
+                # 3rd attempt succeeds
+                texts = kwargs.get("batch_texts") or (args[1] if len(args) > 1 else [])
+                return [f"[UA] {t}" for t in texts]
+
+            with patch("translator_core.get_genai_client"), \
+                 patch("translator_core.translate_batch", side_effect=fake_translate_batch):
+
+                translator_core.translate_fb2(
+                    input_path=input_fb2,
+                    output_path=output_fb2,
+                    api_key="mock_key",
+                    config=cfg,
+                    progress_callback=lambda cur, tot, msg: progress_messages.append(msg)
+                )
+
+                self.assertTrue(os.path.exists(output_fb2))
+                self.assertGreaterEqual(call_count[0], 3)
+                self.assertTrue(any("503" in m for m in progress_messages))
+
+        finally:
+            if os.path.exists(input_fb2):
+                os.remove(input_fb2)
+            if os.path.exists(output_fb2):
+                os.remove(output_fb2)
+
 
 if __name__ == "__main__":
     unittest.main()
+
 
