@@ -22,10 +22,6 @@ if not logger.handlers:
     logger.addHandler(handler)
     logger.setLevel(logging.INFO)
 
-# Suppress AFC warning from Google GenAI SDK
-logging.getLogger("google_genai.models").setLevel(logging.ERROR)
-logging.getLogger("google_genai").setLevel(logging.ERROR)
-
 # Default Prompts and Configurations
 DEFAULT_MODEL = os.getenv("GEMINI_MODEL", "models/gemini-3.1-flash-lite")
 DEFAULT_SYS_PROMPT = os.getenv(
@@ -261,8 +257,7 @@ def translate_batch(
         'response_mime_type': 'application/json',
         'response_schema': RESPONSE_SCHEMA,
         'system_instruction': sys_prompt,
-        'safety_settings': SAFETY_SETTINGS,
-        'automatic_function_calling': {'disable': True}
+        'safety_settings': SAFETY_SETTINGS
     }
 
     response = client.models.generate_content(

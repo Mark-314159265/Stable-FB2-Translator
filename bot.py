@@ -5,7 +5,7 @@ import shutil
 import logging
 import tempfile
 import threading
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Optional
 from flask import Flask, jsonify
 import telebot
 from dotenv import load_dotenv
@@ -119,44 +119,6 @@ class SettingsStorage:
 
 user_settings_storage = SettingsStorage()
 
-# State for custom manual number input from user: user_id -> parameter name
-user_input_state: Dict[int, str] = {}
-user_input_lock = threading.Lock()
-
-
-def apply_user_setting(user_id: int, param: str, raw_val: str) -> Tuple[bool, str]:
-    """Validates and sets a custom parameter value for a user."""
-    cleaned = raw_val.replace(",", ".").strip()
-    try:
-        if param == "char_limit":
-            val = int(cleaned)
-            if not (500 <= val <= 30000):
-                return False, "❌ **Ліміт символів** має бути цілим числом від `500` до `30000`."
-        elif param in ["delay_req", "delay_protect", "delay_error"]:
-            val = float(cleaned)
-            min_v = 0.5 if param == "delay_req" else 1.0
-            max_v = 120.0 if param == "delay_error" else 60.0
-            if not (min_v <= val <= max_v):
-                return False, f"❌ **Затримка** має бути в межах від `{min_v}` до `{max_v}` секунд."
-        elif param == "temperature":
-            val = float(cleaned)
-            if not (0.0 <= val <= 1.0):
-                return False, "❌ **Температура** має бути числом від `0.0` до `1.0`."
-        else:
-            return False, "❌ Невідомий параметр."
-
-        user_settings_storage.set_value(user_id, param, val)
-        names = {
-            "delay_req": f"⏱ Базова затримка: `{val} с`",
-            "delay_protect": f"🛡 Пауза захисту: `{val} с`",
-            "delay_error": f"⚠️ Пауза помилок: `{val} с`",
-            "char_limit": f"🔤 Ліміт символів: `{val}`",
-            "temperature": f"🌡 Температура: `{val}`"
-        }
-        return True, f"✅ **Налаштування успішно збережено:**\n{names.get(param, str(val))}"
-    except ValueError:
-        return False, "❌ Будь ласка, введіть дійсне число (наприклад: `2.5` або `5000`)."
-
 
 # --- Active Translation Tasks Management ---
 class ActiveTask:
@@ -209,15 +171,14 @@ def handle_start(message: telebot.types.Message):
         "✨ **Можливості програми:**\n"
         "• **Пауза та відновлення**: ставте переклад на паузу та відновлюйте у будь-який момент.\n"
         "• **Лічильник запитів**: моніторинг щоденного використання та часу скидання ліміту.\n"
-        "• **Гнучкі налаштування**: кнопки та ручне введення чисел для будь-яких затримок через /settings.\n"
+        "• **Налаштування затримок**: регулювання базової паузи, затримок захисту та помилок через /settings.\n"
         "• **Збереження структури**: книга зберігає всі розділи, розмітку та вірші.\n\n"
         "📖 **Як користуватися:**\n"
         "1. Надішліть файл книги з розширенням `.fb2` як документ.\n"
         "2. Під час перекладу використовуйте кнопки **⏸ Пауза** чи **🛑 Зупинити**.\n"
         "3. Отримайте готовий перекладений файл!\n\n"
         "⚙️ **Команди:**\n"
-        "/settings — Меню налаштувань (затримки, ліміти, модель)\n"
-        "/set <параметр> <значення> — Швидке встановлення значення числом\n"
+        "/settings — Налаштування затримок, моделі та лімітів\n"
         "/status — Лічильник запитів та стан сервісу\n"
         "/help — Докладна довідка"
     )
@@ -230,18 +191,16 @@ def handle_help(message: telebot.types.Message):
     text = (
         "ℹ️ **Довідка щодо роботи бота:**\n\n"
         "• **Формат:** Тільки `.fb2` (FictionBook 2.0).\n"
-        "• **Розмір файлу:** До 20 МБ (ліміт Telegram Bot API).\n\n"
-        "• **Керування перекладом:**\n"
-        "  - `⏸ Пауза` — тимчасово призупиняє надсилання запитів.\n"
+        "• **Розмір файлу:** До 20 МБ (ліміт Telegram Bot API).\n"
+        "• **Керування:** Під час перекладу під повідомленням прогресу доступні кнопки керування:\n"
+        "  - `⏸ Пауза` — тимчасово призупиняє запити до API.\n"
         "  - `▶️ Продовжити` — продовжує роботу з того ж місця.\n"
-        "  - `🛑 Зупинити` — перериває процес та повертає частково перекладений файл.\n\n"
-        "• **Налаштування затримок:**\n"
-        "  Ви можете використовувати зручне меню /settings або пряму команду `/set`:\n"
-        "  - `/set base 2.5` — базова затримка між запитами (с)\n"
-        "  - `/set protect 5.0` — пауза при спрацюванні фільтрів (с)\n"
-        "  - `/set error 10.0` — пауза при збої або ліміті 429 (с)\n"
-        "  - `/set limit 6000` — ліміт символів на пакет\n"
-        "  - `/set temp 0.3` — температура моделі (від 0.0 до 1.0)"
+        "  - `🛑 Зупинити` — перериває процес та повертає частково збережений переклад.\n\n"
+        "• **Налаштування:** За допомогою команди /settings можна змінити:\n"
+        "  - Базову затримку між запитами (за замовчуванням 2.0 с);\n"
+        "  - Паузу при спрацюванні фільтрів безпеки;\n"
+        "  - Паузу при збоях сервера / квоті 429;\n"
+        "  - Ліміт символів у пакеті та модель Gemini."
     )
     bot.reply_to(message, text, parse_mode="Markdown")
 
@@ -265,7 +224,7 @@ def handle_status(message: telebot.types.Message):
         f"📈 **Лічильник запитів сьогодні:**\n"
         f"• **Використано:** `{stats['requests_today']} / {stats['daily_limit']}` запитів\n"
         f"• **Скидання квоти через:** `{stats['time_until_reset']}` (о {stats['reset_time_local']})\n\n"
-        f"⚙️ **Ваші персональні налаштування:**\n"
+        f"⚙️ **Ваші поточні налаштування:**\n"
         f"• Базова пауза: `{cfg.delay_req} с`\n"
         f"• Пауза захисту: `{cfg.delay_protect} с`\n"
         f"• Пауза помилок: `{cfg.delay_error} с`\n"
@@ -274,62 +233,6 @@ def handle_status(message: telebot.types.Message):
         "Змінити параметри: /settings"
     )
     bot.reply_to(message, status_text, parse_mode="Markdown")
-
-
-@bot.message_handler(commands=["cancel"])
-def handle_cancel(message: telebot.types.Message):
-    """Cancels active text input mode."""
-    user_id = message.from_user.id
-    with user_input_lock:
-        was_waiting = user_input_state.pop(user_id, None)
-
-    if was_waiting:
-        bot.reply_to(message, "❌ Введення значення скасовано.")
-        text, markup = build_settings_menu(user_id)
-        bot.send_message(message.chat.id, text, reply_markup=markup, parse_mode="Markdown")
-    else:
-        bot.reply_to(message, "Немає активного очікування введення.")
-
-
-@bot.message_handler(commands=["set"])
-def handle_set_command(message: telebot.types.Message):
-    """Sets a configuration parameter directly via command: /set <param> <value>."""
-    parts = message.text.strip().split()
-    if len(parts) != 3:
-        bot.reply_to(
-            message,
-            "ℹ️ **Формат команди:** `/set <параметр> <значення>`\n\n"
-            "Приклади:\n"
-            "• `/set base 2.5` — базова пауза (с)\n"
-            "• `/set protect 7.0` — пауза захисту (с)\n"
-            "• `/set error 15.0` — пауза збоїв (с)\n"
-            "• `/set limit 5000` — ліміт символів\n"
-            "• `/set temp 0.4` — температура",
-            parse_mode="Markdown"
-        )
-        return
-
-    param_raw, val_raw = parts[1].lower(), parts[2]
-    param_map = {
-        "base": "delay_req",
-        "delay": "delay_req",
-        "delay_req": "delay_req",
-        "protect": "delay_protect",
-        "delay_protect": "delay_protect",
-        "error": "delay_error",
-        "delay_error": "delay_error",
-        "limit": "char_limit",
-        "char_limit": "char_limit",
-        "temp": "temperature",
-        "temperature": "temperature"
-    }
-    param = param_map.get(param_raw)
-    if not param:
-        bot.reply_to(message, f"❌ Невідомий параметр `{param_raw}`. Доступні: `base`, `protect`, `error`, `limit`, `temp`.", parse_mode="Markdown")
-        return
-
-    success, msg = apply_user_setting(message.from_user.id, param, val_raw)
-    bot.reply_to(message, msg, parse_mode="Markdown")
 
 
 # --- Settings UI Handlers ---
@@ -348,7 +251,7 @@ def build_settings_menu(user_id: int):
         f"🤖 **Модель AI:** `{cfg.model}`\n\n"
         f"📊 **Запитів сьогодні:** `{stats['requests_today']} / {stats['daily_limit']}` "
         f"(скидання через `{stats['time_until_reset']}`)\n\n"
-        "Оберіть параметр для налаштування (кнопкою або введенням числа):"
+        "Оберіть параметр, який бажаєте змінити:"
     )
 
     markup = telebot.types.InlineKeyboardMarkup(row_width=2)
@@ -433,8 +336,6 @@ def handle_callbacks(call: telebot.types.CallbackQuery):
 
     # 2. Settings Menu Actions
     if data == "cfg_main":
-        with user_input_lock:
-            user_input_state.pop(user_id, None)
         text, markup = build_settings_menu(user_id)
         try:
             bot.edit_message_text(text, chat_id=chat_id, message_id=call.message.message_id, reply_markup=markup, parse_mode="Markdown")
@@ -444,8 +345,6 @@ def handle_callbacks(call: telebot.types.CallbackQuery):
         return
 
     if data == "cfg_close":
-        with user_input_lock:
-            user_input_state.pop(user_id, None)
         try:
             bot.delete_message(chat_id=chat_id, message_id=call.message.message_id)
         except Exception:
@@ -465,84 +364,74 @@ def handle_callbacks(call: telebot.types.CallbackQuery):
 
     # Submenus for parameters
     if data == "cfg_menu_delay_req":
-        cfg = user_settings_storage.get_config(user_id)
-        text = f"⏱ **Базова затримка між успішними запитами:**\nПоточне: `{cfg.delay_req}` с\n\nОберіть швидкий варіант або введіть своє число:"
+        text = "⏱ **Оберіть базову затримку між успішними запитами (в секундах):**"
         markup = telebot.types.InlineKeyboardMarkup(row_width=3)
         markup.add(
             telebot.types.InlineKeyboardButton("1.0 с", callback_data="set_delay_req_1.0"),
-            telebot.types.InlineKeyboardButton("2.0 с", callback_data="set_delay_req_2.0"),
+            telebot.types.InlineKeyboardButton("2.0 с (стандарт)", callback_data="set_delay_req_2.0"),
             telebot.types.InlineKeyboardButton("3.0 с", callback_data="set_delay_req_3.0"),
             telebot.types.InlineKeyboardButton("5.0 с", callback_data="set_delay_req_5.0"),
             telebot.types.InlineKeyboardButton("10.0 с", callback_data="set_delay_req_10.0"),
         )
-        markup.row(telebot.types.InlineKeyboardButton("✏️ Ввести власне число", callback_data="cfg_input_delay_req"))
         markup.row(telebot.types.InlineKeyboardButton("« Назад", callback_data="cfg_main"))
         bot.edit_message_text(text, chat_id=chat_id, message_id=call.message.message_id, reply_markup=markup, parse_mode="Markdown")
         bot.answer_callback_query(call.id)
         return
 
     if data == "cfg_menu_delay_protect":
-        cfg = user_settings_storage.get_config(user_id)
-        text = f"🛡 **Пауза при спрацюванні фільтрів безпеки:**\nПоточне: `{cfg.delay_protect}` с\n\nОберіть швидкий варіант або введіть своє число:"
+        text = "🛡 **Оберіть паузу при спрацюванні фільтрів безпеки (в секундах):**"
         markup = telebot.types.InlineKeyboardMarkup(row_width=3)
         markup.add(
             telebot.types.InlineKeyboardButton("2.0 с", callback_data="set_delay_protect_2.0"),
-            telebot.types.InlineKeyboardButton("5.0 с", callback_data="set_delay_protect_5.0"),
+            telebot.types.InlineKeyboardButton("5.0 с (стандарт)", callback_data="set_delay_protect_5.0"),
             telebot.types.InlineKeyboardButton("10.0 с", callback_data="set_delay_protect_10.0"),
             telebot.types.InlineKeyboardButton("15.0 с", callback_data="set_delay_protect_15.0"),
         )
-        markup.row(telebot.types.InlineKeyboardButton("✏️ Ввести власне число", callback_data="cfg_input_delay_protect"))
         markup.row(telebot.types.InlineKeyboardButton("« Назад", callback_data="cfg_main"))
         bot.edit_message_text(text, chat_id=chat_id, message_id=call.message.message_id, reply_markup=markup, parse_mode="Markdown")
         bot.answer_callback_query(call.id)
         return
 
     if data == "cfg_menu_delay_error":
-        cfg = user_settings_storage.get_config(user_id)
-        text = f"⚠️ **Пауза при збоях сервера або 429:**\nПоточне: `{cfg.delay_error}` с\n\nОберіть швидкий варіант або введіть своє число:"
+        text = "⚠️ **Оберіть паузу при збоях сервера або 429 (в секундах):**"
         markup = telebot.types.InlineKeyboardMarkup(row_width=3)
         markup.add(
             telebot.types.InlineKeyboardButton("5.0 с", callback_data="set_delay_error_5.0"),
-            telebot.types.InlineKeyboardButton("10.0 с", callback_data="set_delay_error_10.0"),
+            telebot.types.InlineKeyboardButton("10.0 с (стандарт)", callback_data="set_delay_error_10.0"),
             telebot.types.InlineKeyboardButton("15.0 с", callback_data="set_delay_error_15.0"),
             telebot.types.InlineKeyboardButton("20.0 с", callback_data="set_delay_error_20.0"),
         )
-        markup.row(telebot.types.InlineKeyboardButton("✏️ Ввести власне число", callback_data="cfg_input_delay_error"))
         markup.row(telebot.types.InlineKeyboardButton("« Назад", callback_data="cfg_main"))
         bot.edit_message_text(text, chat_id=chat_id, message_id=call.message.message_id, reply_markup=markup, parse_mode="Markdown")
         bot.answer_callback_query(call.id)
         return
 
     if data == "cfg_menu_char_limit":
-        cfg = user_settings_storage.get_config(user_id)
-        text = f"🔤 **Ліміт символів на один пакет:**\nПоточне: `{cfg.char_limit}`\n\nОберіть швидкий варіант або введіть своє число:"
+        text = "🔤 **Оберіть ліміт символів на один пакет:**"
         markup = telebot.types.InlineKeyboardMarkup(row_width=3)
         markup.add(
             telebot.types.InlineKeyboardButton("3000", callback_data="set_char_limit_3000"),
             telebot.types.InlineKeyboardButton("4000", callback_data="set_char_limit_4000"),
-            telebot.types.InlineKeyboardButton("6000", callback_data="set_char_limit_6000"),
+            telebot.types.InlineKeyboardButton("6000 (стандарт)", callback_data="set_char_limit_6000"),
             telebot.types.InlineKeyboardButton("8000", callback_data="set_char_limit_8000"),
             telebot.types.InlineKeyboardButton("10000", callback_data="set_char_limit_10000"),
         )
-        markup.row(telebot.types.InlineKeyboardButton("✏️ Ввести власне число", callback_data="cfg_input_char_limit"))
         markup.row(telebot.types.InlineKeyboardButton("« Назад", callback_data="cfg_main"))
         bot.edit_message_text(text, chat_id=chat_id, message_id=call.message.message_id, reply_markup=markup, parse_mode="Markdown")
         bot.answer_callback_query(call.id)
         return
 
     if data == "cfg_menu_temperature":
-        cfg = user_settings_storage.get_config(user_id)
-        text = f"🌡 **Температура генерації (0.0 — точний переклад, 1.0 — вільний):**\nПоточне: `{cfg.temperature}`\n\nОберіть швидкий варіант або введіть своє число:"
+        text = "🌡 **Оберіть температуру генерації (0.0 — точний переклад, 1.0 — вільний):**"
         markup = telebot.types.InlineKeyboardMarkup(row_width=3)
         markup.add(
             telebot.types.InlineKeyboardButton("0.0", callback_data="set_temp_0.0"),
             telebot.types.InlineKeyboardButton("0.2", callback_data="set_temp_0.2"),
-            telebot.types.InlineKeyboardButton("0.3", callback_data="set_temp_0.3"),
+            telebot.types.InlineKeyboardButton("0.3 (стандарт)", callback_data="set_temp_0.3"),
             telebot.types.InlineKeyboardButton("0.5", callback_data="set_temp_0.5"),
             telebot.types.InlineKeyboardButton("0.7", callback_data="set_temp_0.7"),
             telebot.types.InlineKeyboardButton("1.0", callback_data="set_temp_1.0"),
         )
-        markup.row(telebot.types.InlineKeyboardButton("✏️ Ввести власне число", callback_data="cfg_input_temperature"))
         markup.row(telebot.types.InlineKeyboardButton("« Назад", callback_data="cfg_main"))
         bot.edit_message_text(text, chat_id=chat_id, message_id=call.message.message_id, reply_markup=markup, parse_mode="Markdown")
         bot.answer_callback_query(call.id)
@@ -561,34 +450,7 @@ def handle_callbacks(call: telebot.types.CallbackQuery):
         bot.answer_callback_query(call.id)
         return
 
-    # User clicked "Enter custom number"
-    if data.startswith("cfg_input_"):
-        param = data.replace("cfg_input_", "")
-        with user_input_lock:
-            user_input_state[user_id] = param
-
-        prompts = {
-            "delay_req": "⏱ **Введіть бажану базову затримку в секундах**\n(наприклад: `2.5`, діапазон: від `0.5` до `60.0` с):",
-            "delay_protect": "🛡 **Введіть паузу захисту в секундах**\n(наприклад: `7.0`, діапазон: від `1.0` до `60.0` с):",
-            "delay_error": "⚠️ **Введіть паузу помилок в секундах**\n(наприклад: `12.0`, діапазон: від `1.0` до `120.0` с):",
-            "char_limit": "🔤 **Введіть ліміт символів у пакеті**\n(наприклад: `5000`, діапазон: від `500` до `30000`):",
-            "temperature": "🌡 **Введіть температуру генерації**\n(наприклад: `0.35`, діапазон: від `0.0` до `1.0`):"
-        }
-        prompt_text = prompts.get(param, "Введіть числове значення:")
-        cancel_markup = telebot.types.InlineKeyboardMarkup()
-        cancel_markup.row(telebot.types.InlineKeyboardButton("« Скасувати", callback_data="cfg_main"))
-
-        bot.edit_message_text(
-            f"{prompt_text}\n\n_Надішліть повідомлення з числом у цей чат (або натисніть «Скасувати»)._",
-            chat_id=chat_id,
-            message_id=call.message.message_id,
-            reply_markup=cancel_markup,
-            parse_mode="Markdown"
-        )
-        bot.answer_callback_query(call.id)
-        return
-
-    # Applying predefined button values
+    # Applying settings
     if data.startswith("set_delay_req_"):
         val = float(data.replace("set_delay_req_", ""))
         user_settings_storage.set_value(user_id, "delay_req", val)
@@ -836,27 +698,11 @@ def handle_document(message: telebot.types.Message):
 
 @bot.message_handler(func=lambda msg: True)
 def handle_other_messages(message: telebot.types.Message):
-    """Handles text input: custom numerical parameter values or general prompts."""
-    user_id = message.from_user.id
-    with user_input_lock:
-        active_param = user_input_state.get(user_id)
-
-    if active_param:
-        success, msg = apply_user_setting(user_id, active_param, message.text.strip())
-        if success:
-            with user_input_lock:
-                user_input_state.pop(user_id, None)
-            bot.reply_to(message, msg, parse_mode="Markdown")
-            text, markup = build_settings_menu(user_id)
-            bot.send_message(message.chat.id, text, reply_markup=markup, parse_mode="Markdown")
-        else:
-            bot.reply_to(message, f"{msg}\n_Спробуйте ще раз або введіть /cancel для скасування._", parse_mode="Markdown")
-        return
-
+    """Catches other text messages and prompts the user."""
     bot.reply_to(
         message,
         "👋 Надішліть файл книги у форматі **.fb2** як документ для початку перекладу.\n"
-        "Налаштування затримок: /settings (або команда `/set <параметр> <значення>`)\n"
+        "Налаштування затримок: /settings\n"
         "Лічильник запитів: /status",
         parse_mode="Markdown"
     )
@@ -883,3 +729,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
