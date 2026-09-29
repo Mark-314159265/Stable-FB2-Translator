@@ -121,7 +121,6 @@ class TestTelegramBot(unittest.TestCase):
             self.assertIn("requests_today", data)
             self.assertIn("time_until_reset", data)
 
-
     def test_apply_user_setting(self):
         # Valid settings
         ok, msg = bot.apply_user_setting(222, "delay_req", "2.5")
