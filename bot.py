@@ -173,9 +173,6 @@ class ActiveTask:
         self.current_idx = 0
         self.total_elements = 0
         self.last_status_text = "Початок роботи..."
-        self.output_path: Optional[str] = None
-        self.base_name: str = ""
-        self.ext: str = ".fb2"
 
 
 # Keyed by chat_id
@@ -193,54 +190,20 @@ def get_main_menu_keyboard() -> telebot.types.ReplyKeyboardMarkup:
     """Creates a persistent reply keyboard always visible at the bottom of the chat."""
     markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
     markup.row("⚙️ Налаштування", "📊 Статус")
-    markup.row("📖 Завантажити поточну частину", "ℹ️ Довідка")
+    markup.row("ℹ️ Довідка")
     return markup
 
 
 def get_task_keyboard(is_paused: bool) -> telebot.types.InlineKeyboardMarkup:
-    """Creates Pause/Resume, Download Current, and Stop inline buttons for active translation."""
+    """Creates Pause/Resume and Stop inline buttons for active translation."""
     markup = telebot.types.InlineKeyboardMarkup(row_width=2)
     if is_paused:
         btn_toggle = telebot.types.InlineKeyboardButton("▶️ Продовжити", callback_data="task_resume")
     else:
         btn_toggle = telebot.types.InlineKeyboardButton("⏸ Пауза", callback_data="task_pause")
     btn_stop = telebot.types.InlineKeyboardButton("🛑 Зупинити", callback_data="task_stop")
-    btn_get = telebot.types.InlineKeyboardButton("📖 Завантажити перекладене", callback_data="task_get_current")
     markup.add(btn_toggle, btn_stop)
-    markup.row(btn_get)
     return markup
-
-
-def send_current_partial_file(chat_id: int, task: ActiveTask):
-    """Sends the current partially translated FB2 file without interrupting ongoing translation."""
-    if not task.output_path or not os.path.exists(task.output_path) or os.path.getsize(task.output_path) == 0 or task.current_idx == 0:
-        bot.send_message(
-            chat_id,
-            "⏳ **Ще немає перекладених абзаців.**\nЗачекайте, поки перекладеться перший пакет тексту.",
-            parse_mode="Markdown"
-        )
-        return
-
-    try:
-        pct = int((task.current_idx / task.total_elements) * 100) if task.total_elements > 0 else 0
-        file_name = f"{task.base_name}_part_{task.current_idx}of{task.total_elements}{task.ext}"
-        with open(task.output_path, "rb") as f:
-            bot.send_document(
-                chat_id=chat_id,
-                document=f,
-                visible_file_name=file_name,
-                caption=(
-                    f"📖 **Поточний переклад книги:** `{task.file_name}`\n\n"
-                    f"Перекладено: **{task.current_idx} / {task.total_elements}** абзаців (**{pct}%**)\n"
-                    f"Запитів: `{task.file_requests}`\n\n"
-                    f"✨ _Ви вже можете читати перекладене! Переклад решти книги продовжується у фоні._"
-                ),
-                parse_mode="Markdown"
-            )
-        logger.info(f"Sent intermediate translated file {file_name} to chat {chat_id}")
-    except Exception as e:
-        logger.warning(f"Failed to send intermediate file to {chat_id}: {e}")
-        bot.send_message(chat_id, f"⚠️ Не вдалося надіслати поточний файл: {e}")
 
 
 # --- Bot Command Handlers ---
@@ -335,19 +298,6 @@ def handle_status(message: telebot.types.Message):
     inline_markup = telebot.types.InlineKeyboardMarkup()
     inline_markup.add(telebot.types.InlineKeyboardButton("⚙️ Відкрити налаштування", callback_data="cfg_main"))
     bot.reply_to(message, status_text, reply_markup=inline_markup, parse_mode="Markdown")
-
-
-@bot.message_handler(commands=["getfile", "part", "read"])
-@bot.message_handler(func=lambda m: m.text in ["📖 Завантажити поточну частину", "Завантажити поточну частину"])
-def handle_get_current_portion(message: telebot.types.Message):
-    """Sends current partially translated FB2 file while translation is actively running."""
-    chat_id = message.chat.id
-    with tasks_lock:
-        task = active_tasks.get(chat_id)
-    if not task:
-        bot.reply_to(message, "ℹ️ Наразі у вас немає активного перекладу книги.\nНадішліть файл `.fb2`, щоб розпочати.")
-        return
-    send_current_partial_file(chat_id, task)
 
 
 @bot.message_handler(commands=["cancel"])
@@ -456,18 +406,13 @@ def handle_callbacks(call: telebot.types.CallbackQuery):
     user_id = call.from_user.id
     data = call.data
 
-    # 1. Active Task Controls (Pause / Resume / Stop / Download Current)
-    if data in ["task_pause", "task_resume", "task_stop", "task_get_current"]:
+    # 1. Active Task Controls (Pause / Resume / Stop)
+    if data in ["task_pause", "task_resume", "task_stop"]:
         with tasks_lock:
             task = active_tasks.get(chat_id)
 
         if not task:
             bot.answer_callback_query(call.id, "Переклад уже завершено або не знайдено.")
-            return
-
-        if data == "task_get_current":
-            bot.answer_callback_query(call.id, "📖 Надсилаю перекладену частину...")
-            send_current_partial_file(chat_id, task)
             return
 
         if data == "task_pause":
@@ -724,7 +669,7 @@ def handle_callbacks(call: telebot.types.CallbackQuery):
 
 # --- Document Processing ---
 @bot.message_handler(content_types=["document"])
-def handle_document(message: telebot.types.Message, wait_for_completion: bool = False) -> Optional[threading.Thread]:
+def handle_document(message: telebot.types.Message):
     """Handles incoming document files, validates .fb2, translates, and returns the result."""
     chat_id = message.chat.id
     user_id = message.from_user.id
@@ -741,7 +686,7 @@ def handle_document(message: telebot.types.Message, wait_for_completion: bool = 
                 "Будь ласка, зачекайте завершення або зупиніть поточний переклад кнопкою 🛑 під повідомленням прогресу.",
                 parse_mode="Markdown"
             )
-            return None
+            return
 
     # 2. Validate file extension
     if not clean_name.lower().endswith(".fb2"):
@@ -751,7 +696,7 @@ def handle_document(message: telebot.types.Message, wait_for_completion: bool = 
             "Будь ласка, надішліть файл з розширенням `.fb2` як документ.",
             parse_mode="Markdown"
         )
-        return None
+        return
 
     # 3. Check file size (Telegram Bot API limit is 20MB for downloads)
     if doc.file_size and doc.file_size > 20 * 1024 * 1024:
@@ -761,7 +706,7 @@ def handle_document(message: telebot.types.Message, wait_for_completion: bool = 
             "Telegram Bot API не підтримує завантаження файлів більших за 20 МБ.",
             parse_mode="Markdown"
         )
-        return None
+        return
 
     # 4. Check Gemini API key configuration
     if not os.getenv("GEMINI_API_KEY"):
@@ -771,7 +716,7 @@ def handle_document(message: telebot.types.Message, wait_for_completion: bool = 
             "Зверніться до адміністратора або додайте змінну середовища.",
             parse_mode="Markdown"
         )
-        return None
+        return
 
     # Fetch user specific settings
     user_cfg = user_settings_storage.get_config(user_id)
@@ -789,160 +734,149 @@ def handle_document(message: telebot.types.Message, wait_for_completion: bool = 
     with tasks_lock:
         active_tasks[chat_id] = task
 
-    def run_worker():
-        # Dedicated temp directory
-        temp_dir = tempfile.mkdtemp(prefix="fb2_trans_")
-        input_path = os.path.join(temp_dir, clean_name)
+    # Dedicated temp directory
+    temp_dir = tempfile.mkdtemp(prefix="fb2_trans_")
+    input_path = os.path.join(temp_dir, clean_name)
 
-        base_name, ext = os.path.splitext(clean_name)
-        output_filename = f"{base_name}_uk{ext}"
-        output_path = os.path.join(temp_dir, output_filename)
+    base_name, ext = os.path.splitext(clean_name)
+    output_filename = f"{base_name}_uk{ext}"
+    output_path = os.path.join(temp_dir, output_filename)
 
-        task.output_path = output_path
-        task.base_name = base_name
-        task.ext = ext
+    try:
+        # Download document
+        file_info = bot.get_file(doc.file_id)
+        downloaded = bot.download_file(file_info.file_path)
+        with open(input_path, "wb") as f:
+            f.write(downloaded)
 
-        try:
-            # Download document
-            file_info = bot.get_file(doc.file_id)
-            downloaded = bot.download_file(file_info.file_path)
-            with open(input_path, "wb") as f:
-                f.write(downloaded)
+        logger.info(f"Downloaded '{clean_name}' ({len(downloaded)} bytes) to {input_path}")
 
-            logger.info(f"Downloaded '{clean_name}' ({len(downloaded)} bytes) to {input_path}")
+        # Throttled progress updater with live request counters and reset timer
+        last_update_time = [0.0]
+        last_rendered_text = [""]
 
-            # Throttled progress updater with live request counters and reset timer
-            last_update_time = [0.0]
-            last_rendered_text = [""]
+        def on_request():
+            task.file_requests += 1
 
-            def on_request():
-                task.file_requests += 1
+        def on_progress(current: int, total: int, status_info: str):
+            task.current_idx = current
+            task.total_elements = total
+            task.last_status_text = status_info
 
-            def on_progress(current: int, total: int, status_info: str):
-                task.current_idx = current
-                task.total_elements = total
-                task.last_status_text = status_info
+            now = time.time()
+            if (now - last_update_time[0] >= 3.5) or (total > 0 and current >= total):
+                last_update_time[0] = now
+                pct = int((current / total) * 100) if total > 0 else 0
+                filled_bar = "▓" * (pct // 10)
+                empty_bar = "░" * (10 - (pct // 10))
 
-                now = time.time()
-                if (now - last_update_time[0] >= 3.5) or (total > 0 and current >= total):
-                    last_update_time[0] = now
-                    pct = int((current / total) * 100) if total > 0 else 0
-                    filled_bar = "▓" * (pct // 10)
-                    empty_bar = "░" * (10 - (pct // 10))
+                stats = global_stats.get_stats()
+                pause_label = "⏸ **(Призупинено)**\n" if task.is_paused else ""
 
-                    stats = global_stats.get_stats()
-                    pause_label = "⏸ **(Призупинено)**\n" if task.is_paused else ""
-
-                    msg_body = (
-                        f"{pause_label}📖 **Переклад книги:** `{clean_name}`\n\n"
-                        f"Прогрес: `[{filled_bar}{empty_bar}]` **{pct}%**\n"
-                        f"Абзаців: {current} / {total}\n"
-                        f"Запитів: {task.file_requests} (сьогодні: {stats['requests_today']}/{stats['daily_limit']})\n"
-                        f"Скидання квоти: `{stats['time_until_reset']}` (о {stats['reset_time_local']})\n\n"
-                        f"_{status_info}_"
-                    )
-                    if msg_body != last_rendered_text[0]:
-                        last_rendered_text[0] = msg_body
-                        try:
-                            bot.edit_message_text(
-                                chat_id=chat_id,
-                                message_id=status_msg.message_id,
-                                text=msg_body,
-                                parse_mode="Markdown",
-                                reply_markup=get_task_keyboard(is_paused=task.is_paused)
-                            )
-                        except Exception:
-                            pass
-
-            # 5. Translate using translator_core with user configuration, pause_event, cancel_event, and request counter
-            translate_fb2(
-                input_path=input_path,
-                output_path=output_path,
-                config=user_cfg,
-                progress_callback=on_progress,
-                pause_event=task.pause_event,
-                cancel_event=task.cancel_event,
-                on_request=on_request
-            )
-
-            # 6. Send translated document back to user
-            try:
-                bot.edit_message_text(
-                    chat_id=chat_id,
-                    message_id=status_msg.message_id,
-                    text=f"✅ **Переклад файлу `{clean_name}` завершено!**\nВикористано запитів: {task.file_requests}\nНадсилаю результат...",
-                    parse_mode="Markdown"
+                msg_body = (
+                    f"{pause_label}📖 **Переклад книги:** `{clean_name}`\n\n"
+                    f"Прогрес: `[{filled_bar}{empty_bar}]` **{pct}%**\n"
+                    f"Абзаців: {current} / {total}\n"
+                    f"Запитів: {task.file_requests} (сьогодні: {stats['requests_today']}/{stats['daily_limit']})\n"
+                    f"Скидання квоти: `{stats['time_until_reset']}` (о {stats['reset_time_local']})\n\n"
+                    f"_{status_info}_"
                 )
-            except Exception:
-                pass
-
-            with open(output_path, "rb") as out_f:
-                bot.send_document(
-                    chat_id=chat_id,
-                    document=out_f,
-                    visible_file_name=output_filename,
-                    caption=f"🎉 **Готово!**\n📄 Перекладений файл: `{output_filename}`\nВикористано запитів: {task.file_requests}",
-                    parse_mode="Markdown"
-                )
-            logger.info(f"Successfully sent translated file {output_filename} to chat {chat_id}")
-
-        except TranslationCancelled:
-            logger.info(f"Translation of {clean_name} was cancelled by user {chat_id}")
-            try:
-                bot.edit_message_text(
-                    chat_id=chat_id,
-                    message_id=status_msg.message_id,
-                    text=f"🛑 **Переклад файлу `{clean_name}` зупинено користувачем.**\nОпрацьовано абзаців: {task.current_idx}/{task.total_elements}",
-                    parse_mode="Markdown"
-                )
-            except Exception:
-                pass
-
-            # Send partial file if elements were translated
-            if os.path.exists(output_path) and os.path.getsize(output_path) > 0 and task.current_idx > 0:
-                try:
-                    partial_name = f"{base_name}_partial{ext}"
-                    with open(output_path, "rb") as out_f:
-                        bot.send_document(
+                if msg_body != last_rendered_text[0]:
+                    last_rendered_text[0] = msg_body
+                    try:
+                        bot.edit_message_text(
                             chat_id=chat_id,
-                            document=out_f,
-                            visible_file_name=partial_name,
-                            caption=f"📄 Частково перекладений файл: `{partial_name}` ({task.current_idx}/{task.total_elements} абзаців)",
-                            parse_mode="Markdown"
+                            message_id=status_msg.message_id,
+                            text=msg_body,
+                            parse_mode="Markdown",
+                            reply_markup=get_task_keyboard(is_paused=task.is_paused)
                         )
-                except Exception as send_err:
-                    logger.warning(f"Failed to send partial file: {send_err}")
+                    except Exception:
+                        pass
 
-        except Exception as e:
-            logger.exception(f"Error occurred while translating {clean_name}")
+        # 5. Translate using translator_core with user configuration, pause_event, cancel_event, and request counter
+        translate_fb2(
+            input_path=input_path,
+            output_path=output_path,
+            config=user_cfg,
+            progress_callback=on_progress,
+            pause_event=task.pause_event,
+            cancel_event=task.cancel_event,
+            on_request=on_request
+        )
+
+        # 6. Send translated document back to user
+        try:
+            bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=status_msg.message_id,
+                text=f"✅ **Переклад файлу `{clean_name}` завершено!**\nВикористано запитів: {task.file_requests}\nНадсилаю результат...",
+                parse_mode="Markdown"
+            )
+        except Exception:
+            pass
+
+        with open(output_path, "rb") as out_f:
+            bot.send_document(
+                chat_id=chat_id,
+                document=out_f,
+                visible_file_name=output_filename,
+                caption=f"🎉 **Готово!**\n📄 Перекладений файл: `{output_filename}`\nВикористано запитів: {task.file_requests}",
+                parse_mode="Markdown"
+            )
+        logger.info(f"Successfully sent translated file {output_filename} to chat {chat_id}")
+
+    except TranslationCancelled:
+        logger.info(f"Translation of {clean_name} was cancelled by user {chat_id}")
+        try:
+            bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=status_msg.message_id,
+                text=f"🛑 **Переклад файлу `{clean_name}` зупинено користувачем.**\nОпрацьовано абзаців: {task.current_idx}/{task.total_elements}",
+                parse_mode="Markdown"
+            )
+        except Exception:
+            pass
+
+        # Send partial file if elements were translated
+        if os.path.exists(output_path) and os.path.getsize(output_path) > 0 and task.current_idx > 0:
             try:
-                bot.edit_message_text(
-                    chat_id=chat_id,
-                    message_id=status_msg.message_id,
-                    text=f"❌ **Помилка під час перекладу:**\n`{str(e)[:400]}`",
-                    parse_mode="Markdown"
-                )
-            except Exception:
-                pass
+                partial_name = f"{base_name}_partial{ext}"
+                with open(output_path, "rb") as out_f:
+                    bot.send_document(
+                        chat_id=chat_id,
+                        document=out_f,
+                        visible_file_name=partial_name,
+                        caption=f"📄 Частково перекладений файл: `{partial_name}` ({task.current_idx}/{task.total_elements} абзаців)",
+                        parse_mode="Markdown"
+                    )
+            except Exception as send_err:
+                logger.warning(f"Failed to send partial file: {send_err}")
 
-        finally:
-            # Unregister active task
-            with tasks_lock:
-                active_tasks.pop(chat_id, None)
+    except Exception as e:
+        logger.exception(f"Error occurred while translating {clean_name}")
+        try:
+            bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=status_msg.message_id,
+                text=f"❌ **Помилка під час перекладу:**\n`{str(e)[:400]}`",
+                parse_mode="Markdown"
+            )
+        except Exception:
+            pass
 
-            # 7. Guaranteed deletion of input and output files and temp directory
-            try:
-                if os.path.exists(temp_dir):
-                    shutil.rmtree(temp_dir, ignore_errors=True)
-                    logger.info(f"Cleaned up temporary directory: {temp_dir}")
-            except Exception as cleanup_err:
-                logger.warning(f"Failed to remove temp dir {temp_dir}: {cleanup_err}")
+    finally:
+        # Unregister active task
+        with tasks_lock:
+            active_tasks.pop(chat_id, None)
 
-    worker_thread = threading.Thread(target=run_worker, daemon=True)
-    worker_thread.start()
-    if wait_for_completion:
-        worker_thread.join()
-    return worker_thread
+        # 7. Guaranteed deletion of input and output files and temp directory
+        try:
+            if os.path.exists(temp_dir):
+                shutil.rmtree(temp_dir, ignore_errors=True)
+                logger.info(f"Cleaned up temporary directory: {temp_dir}")
+        except Exception as cleanup_err:
+            logger.warning(f"Failed to remove temp dir {temp_dir}: {cleanup_err}")
 
 
 @bot.message_handler(func=lambda msg: True)
@@ -980,7 +914,6 @@ def main():
     try:
         bot.set_my_commands([
             telebot.types.BotCommand("start", "Головне меню"),
-            telebot.types.BotCommand("getfile", "Завантажити поточну частину"),
             telebot.types.BotCommand("settings", "Налаштування перекладу"),
             telebot.types.BotCommand("status", "Лічильник запитів та стан"),
             telebot.types.BotCommand("help", "Довідка")

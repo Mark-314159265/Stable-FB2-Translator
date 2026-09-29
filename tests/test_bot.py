@@ -48,7 +48,8 @@ class TestTelegramBot(unittest.TestCase):
                     return output_path
 
                 mock_translate.side_effect = fake_translate
-                bot.handle_document(mock_msg, wait_for_completion=True)
+
+                bot.handle_document(mock_msg)
 
                 self.assertTrue(bot.bot.download_file.called)
                 self.assertTrue(mock_translate.called)
@@ -78,7 +79,7 @@ class TestTelegramBot(unittest.TestCase):
             with patch("bot.translate_fb2") as mock_translate:
                 mock_translate.side_effect = TranslationCancelled("Cancelled by user")
 
-                bot.handle_document(mock_msg, wait_for_completion=True)
+                bot.handle_document(mock_msg)
 
                 # Ensure active_tasks is cleaned up
                 with bot.tasks_lock:
@@ -142,26 +143,6 @@ class TestTelegramBot(unittest.TestCase):
         self.assertFalse(ok)
 
         bot.user_settings_storage.reset(222)
-
-    def test_send_current_partial_file(self):
-        bot.bot.send_document = MagicMock()
-        task = bot.ActiveTask(
-            chat_id=555,
-            status_msg_id=777,
-            file_name="sample.fb2",
-            config=bot.TranslationConfig()
-        )
-        task.output_path = self.dummy_fb2
-        task.base_name = "sample"
-        task.current_idx = 10
-        task.total_elements = 50
-
-        bot.send_current_partial_file(555, task)
-
-        self.assertTrue(bot.bot.send_document.called)
-        call_args = bot.bot.send_document.call_args
-        self.assertEqual(call_args.kwargs["chat_id"], 555)
-        self.assertIn("sample_part_10of50.fb2", call_args.kwargs["visible_file_name"])
 
 
 if __name__ == "__main__":

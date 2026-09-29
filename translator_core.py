@@ -212,12 +212,12 @@ def smart_wait(
     return True
 
 
-def get_genai_client(api_key: Optional[str] = None, timeout: float = 60.0) -> genai.Client:
-    """Creates and returns a genai.Client instance with configured timeout."""
+def get_genai_client(api_key: Optional[str] = None) -> genai.Client:
+    """Creates and returns a genai.Client instance."""
     key = api_key or os.getenv("GEMINI_API_KEY")
     if not key or not key.strip():
         raise ValueError("GEMINI_API_KEY is not set or empty. Please provide a valid Gemini API key.")
-    return genai.Client(api_key=key.strip(), http_options={'timeout': timeout})
+    return genai.Client(api_key=key.strip())
 
 
 def parse_fb2(file_path: str) -> Tuple[etree._ElementTree, List[etree._Element]]:
@@ -249,8 +249,7 @@ def translate_batch(
     model: str = DEFAULT_MODEL,
     sys_prompt: str = DEFAULT_SYS_PROMPT,
     prefix_prompt: str = DEFAULT_PROMPT_1,
-    temperature: float = DEFAULT_TEMPERATURE,
-    timeout: float = 60.0
+    temperature: float = DEFAULT_TEMPERATURE
 ) -> List[str]:
     """
     Sends a batch of text paragraphs to Gemini API and returns the list of translated strings.
@@ -263,8 +262,7 @@ def translate_batch(
         'response_schema': RESPONSE_SCHEMA,
         'system_instruction': sys_prompt,
         'safety_settings': SAFETY_SETTINGS,
-        'automatic_function_calling': {'disable': True},
-        'http_options': {'timeout': timeout}
+        'automatic_function_calling': {'disable': True}
     }
 
     response = client.models.generate_content(
@@ -411,8 +409,6 @@ def translate_fb2(
         success = False
         retries = 0
         max_retries = 3
-        server_retries = 0
-        max_server_retries = 10
 
         while not success and retries < max_retries:
             if check_cancelled() or not wait_if_paused():
@@ -433,8 +429,7 @@ def translate_fb2(
                     model=selected_model,
                     sys_prompt=system_instruction,
                     prefix_prompt=prefix,
-                    temperature=temp,
-                    timeout=60.0
+                    temperature=temp
                 )
 
                 if len(translated) == len(batch_nodes):
@@ -450,78 +445,30 @@ def translate_fb2(
                         f"Mismatch: got {len(translated)} translations for {len(batch_nodes)} paragraphs (retry {retries + 1})"
                     )
                     retries += 1
-                    if progress_callback:
-                        progress_callback(idx, total_elements, f"Невідповідність абзаців ({len(translated)}/{len(batch_nodes)}). Пауза {d_mismatch} с...")
                     if not smart_wait(d_mismatch, pause_event, cancel_event):
                         tree.write(output_path, encoding='utf-8', xml_declaration=True)
                         raise TranslationCancelled("Переклад було скасовано користувачем.")
 
             except Exception as e:
+                retries += 1
                 err_msg = str(e)
-                err_lower = err_msg.lower()
-
-                # Check for temporary server-side / connection / timeout issues
-                is_server_error = any(code in err_msg for code in ["503", "502", "504", "500", "UNAVAILABLE"]) or \
-                                  any(kw in err_lower for kw in ["high demand", "spikes in demand", "timed out", "timeout", "connection", "remote", "reset"])
-
                 if "429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg:
-                    logger.warning(f"API quota / rate limit (429/ResourceExhausted). Waiting 15s...")
-                    if progress_callback:
-                        progress_callback(idx, total_elements, f"Перевищено ліміт запитів (429). Пауза 15 с...")
+                    logger.warning("API quota exceeded (429/ResourceExhausted). Waiting 15s...")
                     if not smart_wait(15.0, pause_event, cancel_event):
                         tree.write(output_path, encoding='utf-8', xml_declaration=True)
                         raise TranslationCancelled("Переклад було скасовано користувачем.")
-                    server_retries += 1
-                    if server_retries >= max_server_retries:
-                        retries += 1
-                    continue
-
-                elif is_server_error:
-                    server_retries += 1
-                    logger.warning(
-                        f"Gemini API temporary server issue / 503 / timeout (attempt {server_retries}/{max_server_retries}): "
-                        f"{err_msg[:120]}. Waiting {d_error}s..."
-                    )
-                    if progress_callback:
-                        progress_callback(idx, total_elements, f"Сервер Gemini зайнятий (503/таймаут). Пауза {d_error} с...")
-
-                    # Refresh client to ensure fresh HTTP connection pool
-                    try:
-                        client = get_genai_client(effective_api_key, timeout=60.0)
-                    except Exception:
-                        pass
-
-                    if not smart_wait(d_error, pause_event, cancel_event):
-                        tree.write(output_path, encoding='utf-8', xml_declaration=True)
-                        raise TranslationCancelled("Переклад було скасовано користувачем.")
-
-                    if server_retries >= max_server_retries:
-                        retries += 1
-                    continue
-
-                elif "safety filter" in err_lower or "empty response" in err_lower:
-                    retries += 1
+                elif "safety filter" in err_msg.lower() or "empty response" in err_msg.lower():
                     logger.warning(f"Safety filter triggered (retry {retries}). Waiting {d_protect}s...")
-                    if progress_callback:
-                        progress_callback(idx, total_elements, f"Фільтр безпеки (спроба {retries}). Пауза {d_protect} с...")
                     if not smart_wait(d_protect, pause_event, cancel_event):
                         tree.write(output_path, encoding='utf-8', xml_declaration=True)
                         raise TranslationCancelled("Переклад було скасовано користувачем.")
-
-                elif "json" in err_lower:
-                    retries += 1
+                elif "json" in err_msg.lower():
                     logger.warning(f"JSON decode error (retry {retries}). Waiting {d_json}s...")
-                    if progress_callback:
-                        progress_callback(idx, total_elements, f"Помилка формату JSON (спроба {retries}). Пауза {d_json} с...")
                     if not smart_wait(d_json, pause_event, cancel_event):
                         tree.write(output_path, encoding='utf-8', xml_declaration=True)
                         raise TranslationCancelled("Переклад було скасовано користувачем.")
-
                 else:
-                    retries += 1
                     logger.error(f"Gemini API error (retry {retries}): {err_msg[:120]}")
-                    if progress_callback:
-                        progress_callback(idx, total_elements, f"Помилка API (спроба {retries}). Пауза {d_error} с...")
                     if not smart_wait(d_error, pause_event, cancel_event):
                         tree.write(output_path, encoding='utf-8', xml_declaration=True)
                         raise TranslationCancelled("Переклад було скасовано користувачем.")
