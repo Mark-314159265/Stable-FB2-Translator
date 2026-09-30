@@ -42,7 +42,7 @@ class UltimateFB2Translator:
         self.file_queue = []
         self.req_count = 0
         
-        self.char_limit = 10000
+        self.char_limit = 12000
         self.current_lang = "Українська"
         self.saved_settings = {}
         
@@ -209,7 +209,7 @@ class UltimateFB2Translator:
             slider.grid(row=i, column=1, sticky='w', padx=10, pady=2)
             self.sliders[var_key] = slider
 
-        self.auto_pause_var = tk.BooleanVar(value=self.saved_settings.get("auto_pause", False))
+        self.auto_pause_var = tk.BooleanVar(value=self.saved_settings.get("auto_pause", True))
         self.switch_auto_pause = ctk.CTkSwitch(self.frame_settings, text=loc.get("auto_pause", "Auto-pause"), variable=self.auto_pause_var)
         self.switch_auto_pause.grid(row=len(settings_configs)+1, column=0, columnspan=2, sticky='w', padx=10, pady=10)
 

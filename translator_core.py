@@ -46,13 +46,14 @@ DEFAULT_PROMPT_3 = os.getenv(
     "уяви що ти мій редактор. зроби вільний художній переклад цього фрагменту моєї чернетки виключно українською мовою:"
 )
 
-DEFAULT_CHAR_LIMIT = int(os.getenv("CHAR_LIMIT", "6000"))
-DEFAULT_TEMPERATURE = float(os.getenv("TEMPERATURE", "0.3"))
+DEFAULT_CHAR_LIMIT = int(os.getenv("CHAR_LIMIT", "12000"))
+DEFAULT_TEMPERATURE = float(os.getenv("TEMPERATURE", "1.0"))
 DEFAULT_DELAY_REQ = float(os.getenv("DELAY_REQ", "2.0"))
-DEFAULT_DELAY_PROTECT = float(os.getenv("DELAY_PROTECT", "5.0"))
-DEFAULT_DELAY_JSON = float(os.getenv("DELAY_JSON", "5.0"))
-DEFAULT_DELAY_MISMATCH = float(os.getenv("DELAY_MISMATCH", "5.0"))
-DEFAULT_DELAY_ERROR = float(os.getenv("DELAY_ERROR", "10.0"))
+DEFAULT_DELAY_PROTECT = float(os.getenv("DELAY_PROTECT", "2.0"))
+DEFAULT_DELAY_JSON = float(os.getenv("DELAY_JSON", "2.0"))
+DEFAULT_DELAY_MISMATCH = float(os.getenv("DELAY_MISMATCH", "2.0"))
+DEFAULT_DELAY_ERROR = float(os.getenv("DELAY_ERROR", "2.0"))
+DEFAULT_AUTO_PAUSE = os.getenv("AUTO_PAUSE", "true").lower() in ("true", "1", "yes")
 
 RESPONSE_SCHEMA = {
     'type': 'OBJECT',
@@ -106,6 +107,7 @@ class TranslationConfig:
     delay_json: float = DEFAULT_DELAY_JSON
     delay_mismatch: float = DEFAULT_DELAY_MISMATCH
     delay_error: float = DEFAULT_DELAY_ERROR
+    auto_pause: bool = DEFAULT_AUTO_PAUSE
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -299,9 +301,11 @@ def translate_fb2(
     delay_json: Optional[float] = None,
     delay_mismatch: Optional[float] = None,
     delay_error: Optional[float] = None,
+    auto_pause: Optional[bool] = None,
     pause_event: Optional[threading.Event] = None,
     cancel_event: Optional[threading.Event] = None,
-    on_request: Optional[Callable[[], None]] = None
+    on_request: Optional[Callable[[], None]] = None,
+    on_auto_pause: Optional[Callable[[], None]] = None
 ) -> str:
     """
     Translates an FB2 file into Ukrainian preserving all original XML structure and markup.
@@ -348,6 +352,10 @@ def translate_fb2(
     logger.info(f"Starting translation: {input_path} -> {output_path} ({total_elements} elements)")
     if progress_callback:
         progress_callback(0, total_elements, "Розпочато аналіз та підготовку пакетів...")
+
+    # Write initial tree so output_path exists immediately for download
+    if not os.path.exists(output_path):
+        tree.write(output_path, encoding='utf-8', xml_declaration=True)
 
     def check_cancelled():
         return (cancel_event and cancel_event.is_set()) or (is_cancelled and is_cancelled())
@@ -452,11 +460,25 @@ def translate_fb2(
             except Exception as e:
                 retries += 1
                 err_msg = str(e)
+                effective_auto_pause = auto_pause if auto_pause is not None else cfg.auto_pause
                 if "429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg:
-                    logger.warning("API quota exceeded (429/ResourceExhausted). Waiting 15s...")
-                    if not smart_wait(15.0, pause_event, cancel_event):
-                        tree.write(output_path, encoding='utf-8', xml_declaration=True)
-                        raise TranslationCancelled("Переклад було скасовано користувачем.")
+                    logger.warning("API quota exceeded (429/ResourceExhausted).")
+                    if effective_auto_pause:
+                        logger.info("Auto-pausing due to 429 error...")
+                        if pause_event:
+                            pause_event.clear()
+                        if on_auto_pause:
+                            try:
+                                on_auto_pause()
+                            except Exception as ape:
+                                logger.warning(f"Error in on_auto_pause callback: {ape}")
+                        if not wait_if_paused():
+                            tree.write(output_path, encoding='utf-8', xml_declaration=True)
+                            raise TranslationCancelled("Переклад було скасовано користувачем.")
+                    else:
+                        if not smart_wait(d_error, pause_event, cancel_event):
+                            tree.write(output_path, encoding='utf-8', xml_declaration=True)
+                            raise TranslationCancelled("Переклад було скасовано користувачем.")
                 elif "safety filter" in err_msg.lower() or "empty response" in err_msg.lower():
                     logger.warning(f"Safety filter triggered (retry {retries}). Waiting {d_protect}s...")
                     if not smart_wait(d_protect, pause_event, cancel_event):
